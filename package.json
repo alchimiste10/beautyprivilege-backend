@@ -1,0 +1,45 @@
+{
+  "name": "beautyprivilege-backend",
+  "version": "1.0.0",
+  "description": "Backend API pour Beauty Privilege",
+  "main": "Server/server.js",
+  "scripts": {
+    "start": "node Server/server.js",
+    "dev": "nodemon Server/server.js",
+    "build": "echo 'No build step required'",
+    "vercel-build": "echo 'Build completed'",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "beauty",
+    "salon",
+    "api",
+    "nodejs"
+  ],
+  "author": "AlchimisteLab",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "aws-sdk": "2.1450.0",
+    "stripe": "^13.5.0",
+    "socket.io": "^4.7.2",
+    "multer": "^1.4.5-lts.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^9.0.0",
+    "@aws-sdk/client-dynamodb": "^3.828.0",
+    "@aws-sdk/lib-dynamodb": "^3.828.0",
+    "aws-amplify": "^6.0.12",
+    "express-rate-limit": "^7.5.0",
+    "express-session": "^1.18.1",
+    "express-validator": "^7.2.1",
+    "helmet": "^8.1.0",
+    "jwks-rsa": "^3.2.0",
+    "aws-jwt-verify": "^4.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
