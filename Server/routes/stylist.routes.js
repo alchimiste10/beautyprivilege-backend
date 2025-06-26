@@ -6,6 +6,7 @@ const { docClient, s3, dynamoConfig, s3Config } = require('../config/awsConfig')
 // Middleware d'authentification
 const { authenticateToken } = require('../middleware/auth');
 const MessageController = require('../controllers/message.controller');
+const AppointmentService = require('../services/appointment.service');
 
 // Fonction utilitaire pour reconstruire les URLs S3 à partir des clés
 const rebuildServiceUrls = (service) => {
@@ -847,34 +848,13 @@ router.delete('/services/:id', authenticateToken, async (req, res) => {
 // Route pour récupérer les réservations d'un styliste
 router.get('/bookings', authenticateToken, async (req, res) => {
   try {
-    console.log('=== DÉBUT ROUTE /bookings ===');
     const stylistId = req.user.id;
-    console.log('StylistId:', stylistId);
-    console.log('Table utilisée:', dynamoConfig.tables.booking);
-    console.log('Index utilisé: byStylist');
 
-    const queryParams = {
-      TableName: dynamoConfig.tables.booking,
-      IndexName: 'byStylist',
-      KeyConditionExpression: 'stylistId = :stylistId',
-      ExpressionAttributeValues: {
-        ':stylistId': stylistId
-      }
-    };
-
-    console.log('Paramètres de la requête DynamoDB:', JSON.stringify(queryParams, null, 2));
-
-    const result = await docClient.query(queryParams).promise();
-    
-    console.log('Résultat de la requête DynamoDB:');
-    console.log('- Nombre d\'éléments trouvés:', result.Items ? result.Items.length : 0);
-    console.log('- Éléments bruts:', JSON.stringify(result.Items, null, 2));
+    // Utiliser le service avec vérification de refus automatique
+    const appointments = await AppointmentService.getStylistAppointmentsWithRejectionCheck(stylistId);
 
     // Enrichir les réservations avec les informations du client et du service
-    console.log('=== ENRICHISSEMENT DES DONNÉES ===');
-    const bookings = await Promise.all(result.Items.map(async (booking, index) => {
-      console.log(`Enrichissement booking ${index + 1}:`, booking.id);
-      
+    const bookings = await Promise.all(appointments.map(async (booking, index) => {
       const [client, service] = await Promise.all([
         docClient.get({
           TableName: dynamoConfig.tables.user,
@@ -886,20 +866,12 @@ router.get('/bookings', authenticateToken, async (req, res) => {
         }).promise()
       ]);
 
-      console.log(`- Client trouvé:`, client.Item ? 'OUI' : 'NON');
-      console.log(`- Service trouvé:`, service.Item ? 'OUI' : 'NON');
-
       return {
         ...booking,
         user: client.Item,
         service: service.Item
       };
     }));
-
-    console.log('=== RÉPONSE FINALE ===');
-    console.log('Nombre de bookings enrichis:', bookings.length);
-    console.log('Réponse complète:', JSON.stringify(bookings, null, 2));
-    console.log('=== FIN ROUTE /bookings ===');
 
     res.json(bookings);
   } catch (error) {
@@ -913,15 +885,21 @@ router.get('/bookings', authenticateToken, async (req, res) => {
 // Route pour mettre à jour le statut d'une réservation
 router.put('/bookings/:id/status', authenticateToken, async (req, res) => {
   try {
-    console.log('=== DÉBUT ROUTE /bookings/:id/status ===');
     const { id } = req.params;
     const { status } = req.body;
     const stylistId = req.user.id;
+
+    // Vérifier et refuser automatiquement le rendez-vous si nécessaire
+    const rejectionResult = await AppointmentService.checkAndRejectAppointment(id);
     
-    console.log('Booking ID:', id);
-    console.log('Nouveau statut:', status);
-    console.log('StylistId:', stylistId);
-    console.log('Table utilisée:', dynamoConfig.tables.booking);
+    // Si le rendez-vous vient d'être refusé, retourner une erreur
+    if (rejectionResult.rejected) {
+      return res.status(400).json({ 
+        message: 'Ce rendez-vous a été refusé automatiquement et ne peut plus être modifié',
+        rejected: true,
+        reason: rejectionResult.message
+      });
+    }
 
     // Vérifier que la réservation appartient au styliste
     const getParams = {
@@ -929,21 +907,23 @@ router.put('/bookings/:id/status', authenticateToken, async (req, res) => {
       Key: { id }
     };
     
-    console.log('Paramètres de récupération:', JSON.stringify(getParams, null, 2));
-    
     const booking = await docClient.get(getParams).promise();
     
-    console.log('Réservation trouvée:', booking.Item ? 'OUI' : 'NON');
     if (booking.Item) {
-      console.log('Réservation brute:', JSON.stringify(booking.Item, null, 2));
-      console.log('StylistId de la réservation:', booking.Item.stylistId);
-      console.log('StylistId du styliste connecté:', stylistId);
-      console.log('Appartient au styliste:', booking.Item.stylistId === stylistId);
+      console.log('Réservation trouvée:', booking.Item.id);
     }
 
     if (!booking.Item || booking.Item.stylistId !== stylistId) {
-      console.log('Réservation non trouvée ou n\'appartient pas au styliste');
       return res.status(404).json({ message: 'Réservation non trouvée' });
+    }
+
+    // Vérifier que le rendez-vous n'est pas déjà refusé
+    if (booking.Item.status === 'REJECTED') {
+      return res.status(400).json({ 
+        message: 'Ce rendez-vous a été refusé et ne peut plus être modifié',
+        rejected: true,
+        reason: booking.Item.rejectionReason || 'Refusé'
+      });
     }
 
     const updatedBooking = {
@@ -961,10 +941,6 @@ router.put('/bookings/:id/status', authenticateToken, async (req, res) => {
 
     await docClient.put(putParams).promise();
     
-    console.log('Réservation mise à jour avec succès');
-    console.log('Réservation finale:', JSON.stringify(updatedBooking, null, 2));
-    console.log('=== FIN ROUTE /bookings/:id/status ===');
-
     res.json(updatedBooking);
   } catch (error) {
     console.error('=== ERREUR ROUTE /bookings/:id/status ===');

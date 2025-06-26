@@ -6,16 +6,14 @@ const { dynamoConfig } = require('../config/awsConfig');
 const Appointment = require('../models/appointment.model');
 const { authenticateToken } = require('../middleware/auth');
 const { getStylistInfo } = require('../utils/stylistHelper');
+const AppointmentService = require('../services/appointment.service');
 
 // Get available slots for a salon or stylist on a given date and duration
 router.get('/available-slots', async (req, res) => {
   try {
-    console.log('=== DÉBUT ROUTE AVAILABLE-SLOTS ===');
     const { salonId, stylistId, date, duration } = req.query;
-    console.log('Paramètres reçus:', { salonId, stylistId, date, duration });
 
     if ((!salonId && !stylistId) || !date || !duration) {
-      console.log('Paramètres manquants');
       return res.status(400).json({ 
         success: false, 
         message: 'Missing salonId/stylistId, date or duration',
@@ -37,8 +35,6 @@ router.get('/available-slots', async (req, res) => {
       parseInt(duration, 10)
     );
 
-    console.log('Créneaux disponibles:', slots);
-    console.log('=== FIN ROUTE AVAILABLE-SLOTS ===');
     res.json({ success: true, slots: slots || [] });
   } catch (error) {
     console.error('Erreur dans la route available-slots:', error);
@@ -248,6 +244,125 @@ router.get('/booking/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Erreur lors de la récupération de la réservation',
+      error: error.message
+    });
+  }
+});
+
+// Route pour déclencher manuellement le refus automatique (admin seulement)
+router.post('/reject-past', authenticateToken, async (req, res) => {
+  try {
+    // Vérifier que l'utilisateur est admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès non autorisé. Seuls les administrateurs peuvent déclencher le refus manuel.'
+      });
+    }
+
+    console.log('🔄 Refus manuel déclenché par l\'administrateur');
+    const result = await AppointmentService.runRejectionCheck();
+    
+    res.json({
+      success: true,
+      message: 'Refus automatique exécuté avec succès',
+      data: result
+    });
+  } catch (error) {
+    console.error('Erreur lors du refus manuel:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du refus automatique',
+      error: error.message
+    });
+  }
+});
+
+// Route pour vérifier le refus d'un rendez-vous spécifique
+router.get('/:id/check-rejection', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await AppointmentService.checkAndRejectAppointment(id);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('Erreur lors de la vérification de refus:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la vérification de refus',
+      error: error.message
+    });
+  }
+});
+
+// Route pour obtenir les statistiques de compte à rebours (client)
+router.get('/countdown/stats', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const stats = await AppointmentService.getCountdownStats(userId, 'client');
+    
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des statistiques de compte à rebours:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des statistiques',
+      error: error.message
+    });
+  }
+});
+
+// Route pour obtenir les statistiques de compte à rebours (styliste)
+router.get('/countdown/stylist/stats', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const stats = await AppointmentService.getCountdownStats(userId, 'stylist');
+    
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des statistiques de compte à rebours styliste:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des statistiques',
+      error: error.message
+    });
+  }
+});
+
+// Route pour obtenir les informations de compte à rebours d'un rendez-vous spécifique
+router.get('/:id/countdown', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const appointment = await AppointmentService.getAppointmentWithRejectionCheck(id);
+    
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Rendez-vous non trouvé'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        appointment,
+        countdown: appointment.countdown
+      }
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération du compte à rebours:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération du compte à rebours',
       error: error.message
     });
   }

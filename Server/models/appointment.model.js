@@ -120,10 +120,222 @@ const Appointment = {
     return new Date(appointment.date) < new Date();
   },
 
+  // Vérifier si un rendez-vous est expiré (date + heure)
+  isExpired: (appointment) => {
+    const now = new Date();
+    const appointmentDateTime = new Date(`${appointment.date}T${appointment.startTime || appointment.timeSlot || '00:00'}`);
+    return appointmentDateTime < now;
+  },
+
+  // Vérifier si un rendez-vous est passé (date seulement)
+  isPastDate: (appointment) => {
+    const now = new Date();
+    const appointmentDate = new Date(appointment.date);
+    // Comparer seulement les dates (année, mois, jour)
+    return appointmentDate.getFullYear() < now.getFullYear() ||
+           (appointmentDate.getFullYear() === now.getFullYear() && appointmentDate.getMonth() < now.getMonth()) ||
+           (appointmentDate.getFullYear() === now.getFullYear() && appointmentDate.getMonth() === now.getMonth() && appointmentDate.getDate() < now.getDate());
+  },
+
+  // Vérifier si un rendez-vous est passé (date + heure)
+  isPastDateTime: (appointment) => {
+    const now = new Date();
+    const appointmentDateTime = new Date(`${appointment.date}T${appointment.startTime || appointment.timeSlot || '00:00'}`);
+    return appointmentDateTime < now;
+  },
+
+  // Vérifier si un rendez-vous a dépassé 2 jours sans réponse
+  isOverdue: (appointment) => {
+    const now = new Date();
+    const createdAt = new Date(appointment.createdAt);
+    const twoDaysInMs = 2 * 24 * 60 * 60 * 1000; // 2 jours en millisecondes
+    return (now - createdAt) > twoDaysInMs;
+  },
+
+  // Calculer le temps restant avant refus automatique (en millisecondes)
+  getTimeUntilAutoRejection: (appointment) => {
+    const now = new Date();
+    const createdAt = new Date(appointment.createdAt);
+    const twoDaysInMs = 2 * 24 * 60 * 60 * 1000;
+    const timeElapsed = now - createdAt;
+    const timeRemaining = twoDaysInMs - timeElapsed;
+    return Math.max(0, timeRemaining); // Ne pas retourner de valeur négative
+  },
+
+  // Formater le temps restant pour l'affichage
+  formatTimeRemaining: (milliseconds) => {
+    if (milliseconds <= 0) {
+      return { days: 0, hours: 0, minutes: 0, expired: true };
+    }
+
+    const days = Math.floor(milliseconds / (24 * 60 * 60 * 1000));
+    const hours = Math.floor((milliseconds % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const minutes = Math.floor((milliseconds % (60 * 60 * 1000)) / (60 * 1000));
+
+    return {
+      days,
+      hours,
+      minutes,
+      expired: false,
+      totalSeconds: Math.floor(milliseconds / 1000)
+    };
+  },
+
   // Vérifier si un rendez-vous peut être annulé
   canBeCancelled: (appointment) => {
     const hoursUntilAppointment = (new Date(appointment.date) - new Date()) / (1000 * 60 * 60);
     return hoursUntilAppointment > 24 && appointment.status === 'pending';
+  },
+
+  // Refuser automatiquement les rendez-vous passés ou en retard
+  rejectPastAppointments: async (docClient) => {
+    try {
+      console.log('=== REFUS AUTOMATIQUE DES RENDEZ-VOUS PASSÉS OU EN RETARD ===');
+      
+      // Récupérer tous les rendez-vous en attente ou confirmés
+      const params = {
+        TableName: dynamoConfig.tables.booking,
+        FilterExpression: '#status IN (:pending, :confirmed)',
+        ExpressionAttributeNames: {
+          '#status': 'status'
+        },
+        ExpressionAttributeValues: {
+          ':pending': 'PENDING',
+          ':confirmed': 'CONFIRMED'
+        }
+      };
+
+      const { Items: appointments } = await docClient.scan(params).promise();
+      
+      if (!appointments || appointments.length === 0) {
+        console.log('Aucun rendez-vous à vérifier');
+        return { rejected: 0, total: 0, reasons: {} };
+      }
+
+      let rejectedCount = 0;
+      const reasons = { datePassed: 0, timePassed: 0, overdue: 0 };
+      const now = new Date();
+
+      for (const appointment of appointments) {
+        let shouldReject = false;
+        let reason = '';
+
+        // Vérifier si la date est passée (date seulement)
+        const isPastDate = Appointment.isPastDate(appointment);
+        
+        // Vérifier si la date + heure est passée
+        const isPastDateTime = Appointment.isPastDateTime(appointment);
+        
+        // Vérifier si le RDV a dépassé 2 jours sans réponse
+        const isOverdue = Appointment.isOverdue(appointment);
+
+        // Déterminer la raison du refus
+        if (isPastDate) {
+          shouldReject = true;
+          reason = 'Date passée';
+          reasons.datePassed++;
+        } else if (isPastDateTime) {
+          shouldReject = true;
+          reason = 'Heure passée';
+          reasons.timePassed++;
+        } else if (isOverdue && appointment.status === 'PENDING') {
+          shouldReject = true;
+          reason = '2 jours sans réponse';
+          reasons.overdue++;
+        }
+
+        // Si le rendez-vous doit être refusé
+        if (shouldReject) {
+          console.log(`Refus automatique du rendez-vous ${appointment.id} - Date: ${appointment.date} ${appointment.startTime || appointment.timeSlot} (${reason})`);
+          
+          // Mettre à jour le statut à REJECTED (refusé automatiquement)
+          const updateParams = {
+            TableName: dynamoConfig.tables.booking,
+            Key: { id: appointment.id },
+            UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #rejectedAt = :rejectedAt, #rejectionReason = :rejectionReason',
+            ExpressionAttributeNames: {
+              '#status': 'status',
+              '#updatedAt': 'updatedAt',
+              '#rejectedAt': 'rejectedAt',
+              '#rejectionReason': 'rejectionReason'
+            },
+            ExpressionAttributeValues: {
+              ':status': 'REJECTED',
+              ':updatedAt': new Date().toISOString(),
+              ':rejectedAt': new Date().toISOString(),
+              ':rejectionReason': `Refusé automatiquement - ${reason}`
+            }
+          };
+
+          await docClient.update(updateParams).promise();
+          rejectedCount++;
+        }
+      }
+
+      console.log(`Refus automatique terminé: ${rejectedCount}/${appointments.length} rendez-vous refusés`);
+      console.log(`Répartition: ${reasons.datePassed} dates passées, ${reasons.timePassed} heures passées, ${reasons.overdue} en retard`);
+      return { rejected: rejectedCount, total: appointments.length, reasons };
+    } catch (error) {
+      console.error('Erreur lors du refus automatique:', error);
+      throw error;
+    }
+  },
+
+  // Vérifier et refuser un rendez-vous spécifique
+  checkAndRejectAppointment: async (docClient, appointmentId) => {
+    try {
+      const appointment = await Appointment.getById(docClient, appointmentId);
+      
+      if (!appointment) {
+        return { rejected: false, message: 'Rendez-vous non trouvé' };
+      }
+
+      const isPastDate = Appointment.isPastDate(appointment);
+      const isPastDateTime = Appointment.isPastDateTime(appointment);
+      const isOverdue = Appointment.isOverdue(appointment);
+      
+      let shouldReject = false;
+      let reason = '';
+
+      if (isPastDate) {
+        shouldReject = true;
+        reason = 'Date passée';
+      } else if (isPastDateTime) {
+        shouldReject = true;
+        reason = 'Heure passée';
+      } else if (isOverdue && appointment.status === 'PENDING') {
+        shouldReject = true;
+        reason = '2 jours sans réponse';
+      }
+      
+      if (shouldReject && (appointment.status === 'PENDING' || appointment.status === 'CONFIRMED')) {
+        const updateParams = {
+          TableName: dynamoConfig.tables.booking,
+          Key: { id: appointmentId },
+          UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt, #rejectedAt = :rejectedAt, #rejectionReason = :rejectionReason',
+          ExpressionAttributeNames: {
+            '#status': 'status',
+            '#updatedAt': 'updatedAt',
+            '#rejectedAt': 'rejectedAt',
+            '#rejectionReason': 'rejectionReason'
+          },
+          ExpressionAttributeValues: {
+            ':status': 'REJECTED',
+            ':updatedAt': new Date().toISOString(),
+            ':rejectedAt': new Date().toISOString(),
+            ':rejectionReason': `Refusé automatiquement - ${reason}`
+          }
+        };
+
+        await docClient.update(updateParams).promise();
+        return { rejected: true, message: `Rendez-vous refusé automatiquement - ${reason}` };
+      }
+
+      return { rejected: false, message: 'Rendez-vous toujours valide' };
+    } catch (error) {
+      console.error('Erreur lors de la vérification de refus:', error);
+      throw error;
+    }
   },
 
   // Ajoute cette méthode utilitaire pour le calcul dynamique des créneaux
@@ -152,16 +364,11 @@ const Appointment = {
 
   getAvailableSlots: async (docClient, { salonId, stylistId }, date, duration) => {
     try {
-      console.log('=== DÉBUT VÉRIFICATION DISPONIBILITÉS ===');
-      console.log('Date demandée:', date);
-      console.log('Durée du service:', duration, 'minutes');
-      console.log('SalonId:', salonId);
-      console.log('StylistId:', stylistId);
+     
 
       // 1. Obtenir le jour de la semaine (0-6, où 0 est dimanche)
       const dayOfWeek = new Date(date).getDay();
       const dayName = Appointment.getDayName(dayOfWeek);
-      console.log('Jour de la semaine:', dayName);
 
       // 2. Charger les horaires du styliste
       let daySchedule;
@@ -259,10 +466,8 @@ const Appointment = {
         
         const { Items: salonBookings } = await docClient.query(bookingParams).promise();
         existingBookings.push(...(salonBookings || []));
-        console.log('Réservations du salon trouvées:', salonBookings?.length || 0);
       }
 
-      console.log('Réservations existantes:', JSON.stringify(existingBookings, null, 2));
 
       // 4. Calculer les heures de début possibles en excluant les créneaux réservés
       const startTime = new Date(`${date}T${daySchedule.start}`);
@@ -302,8 +507,6 @@ const Appointment = {
         currentTime = new Date(currentTime.getTime() + (60 * 60000));
       }
 
-      console.log('Heures de début disponibles (après exclusion des réservations):', slots);
-      console.log('=== FIN VÉRIFICATION DISPONIBILITÉS ===');
       return {
         available: true,
         workingDays: workingDays,
@@ -525,6 +728,27 @@ const Appointment = {
       console.error('Erreur dans enrichBookingWithDetails:', error);
       throw error;
     }
+  },
+
+  // Enrichir un rendez-vous avec les informations de compte à rebours
+  enrichWithCountdown: (appointment) => {
+    const enriched = { ...appointment };
+    
+    if (appointment.status === 'PENDING') {
+      const timeRemaining = Appointment.getTimeUntilAutoRejection(appointment);
+      const formattedTime = Appointment.formatTimeRemaining(timeRemaining);
+      
+      enriched.countdown = {
+        timeRemaining: timeRemaining,
+        formatted: formattedTime,
+        willExpireSoon: timeRemaining < (24 * 60 * 60 * 1000), // Moins de 24h
+        isOverdue: formattedTime.expired
+      };
+    } else {
+      enriched.countdown = null;
+    }
+    
+    return enriched;
   }
 };
 

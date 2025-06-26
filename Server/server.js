@@ -104,6 +104,10 @@ const io = new Server(server, {
 const { initializeSocketIO } = require('./services/socket.service');
 initializeSocketIO(io);
 
+// Initialiser le refus automatique des rendez-vous
+const AppointmentService = require('./services/appointment.service');
+AppointmentService.startAutomaticRejection();
+
 // Gestion des erreurs globale
 app.use((err, req, res, next) => {
   console.error('Erreur serveur:', err.message);
