@@ -17,6 +17,9 @@ router.post('/confirm', paymentController.confirmPayment);
 // Route pour le webhook Stripe
 router.post('/webhook', paymentController.handleWebhook);
 
+// Route pour le webhook Stripe Connect
+router.post('/connect-webhook', paymentController.handleConnectWebhook);
+
 router.get('/stripe-key', paymentController.getStripePublicKey);
 
 module.exports = router; 

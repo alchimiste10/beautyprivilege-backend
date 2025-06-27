@@ -380,13 +380,27 @@ class PaymentController {
             console.log('🔍 Secret utilisé:', process.env.REACT_APP_STRIPE_WEBHOOK_SECRET ? 'OUI' : 'NON');
             console.log('🔍 Signature reçue:', sig ? 'OUI' : 'NON');
             
-            event = stripe.webhooks.constructEvent(
-                rawBody,
-                sig,
-                process.env.REACT_APP_STRIPE_WEBHOOK_SECRET
-            );
-            console.log('✅ Signature webhook vérifiée avec succès');
-            console.log('📡 Événement reçu:', event.type);
+            // Essayer d'abord avec le secret principal
+            try {
+                event = stripe.webhooks.constructEvent(
+                    rawBody,
+                    sig,
+                    process.env.REACT_APP_STRIPE_WEBHOOK_SECRET
+                );
+                console.log('✅ Signature webhook vérifiée avec succès (secret principal)');
+                console.log('📡 Événement reçu:', event.type);
+            } catch (err) {
+                console.log('❌ Échec avec le secret principal, tentative avec le secret Connect');
+                
+                // Si ça échoue, essayer avec le secret Connect
+                event = stripe.webhooks.constructEvent(
+                    rawBody,
+                    sig,
+                    process.env.REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET
+                );
+                console.log('✅ Signature webhook vérifiée avec succès (secret Connect)');
+                console.log('📡 Événement reçu:', event.type);
+            }
         } catch (err) {
             console.error('❌ Erreur de signature webhook:', err.message);
             console.error('❌ Détails de l\'erreur:', err);
@@ -623,6 +637,218 @@ class PaymentController {
                 } catch (error) {
                     console.error('Erreur mise à jour réservation:', error);
                 }
+                break;
+        }
+
+        res.json({ received: true });
+    }
+
+    // Webhook pour les événements Stripe Connect
+    async handleConnectWebhook(req, res) {
+        console.log('🚀 === WEBHOOK STRIPE CONNECT RECEIVED ===');
+        console.log('📅 Timestamp:', new Date().toISOString());
+        console.log('🔗 URL:', req.url);
+        console.log('📋 Method:', req.method);
+        console.log('📦 Headers:', JSON.stringify(req.headers, null, 2));
+        console.log('📄 Body type:', typeof req.body);
+        console.log('📄 Body length:', req.body ? req.body.length : 'undefined');
+        console.log('📄 Body is Buffer:', Buffer.isBuffer(req.body));
+        console.log('📄 Body is string:', typeof req.body === 'string');
+        console.log('🔑 Stripe signature:', req.headers['stripe-signature'] ? 'Present' : 'Missing');
+        console.log('🔧 REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET:', process.env.REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET ? 'Défini' : 'Non défini');
+        console.log('🔧 Secret length:', process.env.REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET ? process.env.REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET.length : 'N/A');
+        
+        const sig = req.headers['stripe-signature'];
+        let event;
+
+        // Essayer de récupérer le body brut
+        let rawBody = req.body;
+        
+        // Si c'est un objet, essayer de le reconvertir en string avec le formatage exact
+        if (typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+            console.log('⚠️ Body est un objet, conversion en string...');
+            // Utiliser JSON.stringify avec 2 espaces pour correspondre au formatage Stripe
+            rawBody = JSON.stringify(req.body, null, 2);
+            console.log('📄 Body converti en string, longueur:', rawBody.length);
+        }
+        
+        // Si c'est déjà une string ou un Buffer, l'utiliser directement
+        if (typeof rawBody === 'string' || Buffer.isBuffer(rawBody)) {
+            console.log('✅ Body brut récupéré, type:', typeof rawBody);
+        } else {
+            console.log('❌ Impossible de récupérer le body brut');
+            return res.status(400).send('Webhook Error: Invalid body format');
+        }
+
+        try {
+            console.log('🔍 Tentative de vérification de signature Connect...');
+            console.log('🔍 Secret Connect utilisé:', process.env.REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET ? 'OUI' : 'NON');
+            console.log('🔍 Signature reçue:', sig ? 'OUI' : 'NON');
+            
+            event = stripe.webhooks.constructEvent(
+                rawBody,
+                sig,
+                process.env.REACT_APP_STRIPE_CONNECT_WEBHOOK_SECRET
+            );
+            console.log('✅ Signature webhook Connect vérifiée avec succès');
+            console.log('📡 Événement Connect reçu:', event.type);
+        } catch (err) {
+            console.error('❌ Erreur de signature webhook Connect:', err.message);
+            console.error('❌ Détails de l\'erreur:', err);
+            return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
+
+        // Gérer les événements Connect
+        switch (event.type) {
+            case 'account.updated':
+                const account = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT ACCOUNT.UPDATED ===');
+                    console.log('Account ID:', account.id);
+                    console.log('Email:', account.email);
+                    console.log('Charges enabled:', account.charges_enabled);
+                    console.log('Payouts enabled:', account.payouts_enabled);
+                    console.log('Requirements:', account.requirements);
+                    
+                    // Trouver l'utilisateur par email et mettre à jour avec le stripeAccountId
+                    if (account.email) {
+                        const userResult = await docClient.scan({
+                            TableName: dynamoConfig.tables.user,
+                            FilterExpression: 'email = :email',
+                            ExpressionAttributeValues: {
+                                ':email': account.email
+                            }
+                        }).promise();
+                        
+                        if (userResult.Items && userResult.Items.length > 0) {
+                            const user = userResult.Items[0];
+                            console.log('Utilisateur trouvé:', user.id);
+                            
+                            // Mettre à jour l'utilisateur avec le stripeAccountId
+                            await docClient.update({
+                                TableName: dynamoConfig.tables.user,
+                                Key: { id: user.id },
+                                UpdateExpression: 'SET stripeAccountId = :stripeAccountId, updatedAt = :updatedAt',
+                                ExpressionAttributeValues: {
+                                    ':stripeAccountId': account.id,
+                                    ':updatedAt': new Date().toISOString()
+                                }
+                            }).promise();
+                            
+                            console.log('Utilisateur mis à jour avec stripeAccountId:', account.id);
+                        } else {
+                            console.log('Aucun utilisateur trouvé avec cet email:', account.email);
+                        }
+                    }
+                    
+                    console.log('=== FIN WEBHOOK CONNECT ACCOUNT.UPDATED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement account.updated:', error);
+                }
+                break;
+
+            case 'account.application.authorized':
+                const authorizedAccount = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT ACCOUNT.APPLICATION.AUTHORIZED ===');
+                    console.log('Account ID:', authorizedAccount.id);
+                    console.log('Application authorized for account');
+                    
+                    // Logique pour gérer l'autorisation de l'application
+                    console.log('=== FIN WEBHOOK CONNECT ACCOUNT.APPLICATION.AUTHORIZED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement account.application.authorized:', error);
+                }
+                break;
+
+            case 'account.application.deauthorized':
+                const deauthorizedAccount = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT ACCOUNT.APPLICATION.DEAUTHORIZED ===');
+                    console.log('Account ID:', deauthorizedAccount.id);
+                    console.log('Application deauthorized for account');
+                    
+                    // Logique pour gérer la déconnexion de l'application
+                    console.log('=== FIN WEBHOOK CONNECT ACCOUNT.APPLICATION.DEAUTHORIZED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement account.application.deauthorized:', error);
+                }
+                break;
+
+            case 'account.external_account.created':
+                const externalAccountCreated = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT ACCOUNT.EXTERNAL_ACCOUNT.CREATED ===');
+                    console.log('External account created for account:', externalAccountCreated.account);
+                    console.log('Bank account last4:', externalAccountCreated.last4);
+                    
+                    // Logique pour gérer l'ajout d'un compte bancaire
+                    console.log('=== FIN WEBHOOK CONNECT ACCOUNT.EXTERNAL_ACCOUNT.CREATED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement account.external_account.created:', error);
+                }
+                break;
+
+            case 'account.external_account.updated':
+                const externalAccountUpdated = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT ACCOUNT.EXTERNAL_ACCOUNT.UPDATED ===');
+                    console.log('External account updated for account:', externalAccountUpdated.account);
+                    console.log('Bank account last4:', externalAccountUpdated.last4);
+                    
+                    // Logique pour gérer la mise à jour d'un compte bancaire
+                    console.log('=== FIN WEBHOOK CONNECT ACCOUNT.EXTERNAL_ACCOUNT.UPDATED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement account.external_account.updated:', error);
+                }
+                break;
+
+            case 'account.external_account.deleted':
+                const externalAccountDeleted = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT ACCOUNT.EXTERNAL_ACCOUNT.DELETED ===');
+                    console.log('External account deleted for account:', externalAccountDeleted.account);
+                    
+                    // Logique pour gérer la suppression d'un compte bancaire
+                    console.log('=== FIN WEBHOOK CONNECT ACCOUNT.EXTERNAL_ACCOUNT.DELETED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement account.external_account.deleted:', error);
+                }
+                break;
+
+            case 'capability.updated':
+                const capabilityUpdated = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT CAPABILITY.UPDATED ===');
+                    console.log('Capability updated for account:', capabilityUpdated.account);
+                    console.log('Capability:', capabilityUpdated.id);
+                    console.log('Status:', capabilityUpdated.status);
+                    
+                    // Logique pour gérer la mise à jour des capacités
+                    console.log('=== FIN WEBHOOK CONNECT CAPABILITY.UPDATED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement capability.updated:', error);
+                }
+                break;
+
+            case 'person.updated':
+                const personUpdated = event.data.object;
+                try {
+                    console.log('=== WEBHOOK CONNECT PERSON.UPDATED ===');
+                    console.log('Person updated for account:', personUpdated.account);
+                    console.log('Person ID:', personUpdated.id);
+                    console.log('First name:', personUpdated.first_name);
+                    console.log('Last name:', personUpdated.last_name);
+                    
+                    // Logique pour gérer la mise à jour des informations personnelles
+                    console.log('=== FIN WEBHOOK CONNECT PERSON.UPDATED ===');
+                } catch (error) {
+                    console.error('Erreur lors du traitement person.updated:', error);
+                }
+                break;
+
+            default:
+                console.log('Événement Connect non géré:', event.type);
                 break;
         }
 

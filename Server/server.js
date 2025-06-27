@@ -49,6 +49,9 @@ const server = createServer(app);
 // Configuration spéciale pour les webhooks Stripe (body brut) - TOUT AU DÉBUT
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
+// Configuration spéciale pour les webhooks Stripe Connect (body brut)
+app.use('/api/payments/connect-webhook', express.raw({ type: 'application/json' }));
+
 // Middleware de logging
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
