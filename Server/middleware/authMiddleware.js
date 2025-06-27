@@ -49,7 +49,7 @@ const authMiddleware = async (req, res, next) => {
         Key: {
           id: decoded.sub
         },
-        ProjectionExpression: 'id, email, username, #userRole',
+        ProjectionExpression: 'id, email, username, #userRole, stripeAccountId',
         ExpressionAttributeNames: {
           '#userRole': 'role'
         }

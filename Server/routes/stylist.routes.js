@@ -997,6 +997,12 @@ router.post('/connect-stripe', authMiddleware, async (req, res) => {
 // Route pour vérifier le statut de connexion Stripe
 router.get('/stripe-status', authMiddleware, async (req, res) => {
   try {
+    console.log('=== STRIPE STATUS CHECK ===');
+    console.log('User from auth:', req.user);
+    console.log('User ID:', req.user.id);
+    console.log('User role:', req.user.role);
+    console.log('User stripeAccountId from auth:', req.user.stripeAccountId);
+
     if (req.user.role !== 'professional' && req.user.role !== 'Professional') {
       return res.status(403).json({
         success: false,
@@ -1004,9 +1010,18 @@ router.get('/stripe-status', authMiddleware, async (req, res) => {
       });
     }
 
+    // Récupérer les données complètes de l'utilisateur depuis la base de données
+    const { docClient } = require('../config/awsConfig');
+    const User = require('../models/user.model');
+    
+    const user = await User.getById(docClient, req.user.id);
+    console.log('User from database:', user);
+    console.log('User stripeAccountId from database:', user?.stripeAccountId);
+
     const { stripe } = require('../config/stripe.config');
 
-    if (!req.user.stripeAccountId) {
+    if (!user || !user.stripeAccountId) {
+      console.log('No stripeAccountId found, returning not_connected');
       return res.json({
         success: true,
         data: {
@@ -1016,13 +1031,22 @@ router.get('/stripe-status', authMiddleware, async (req, res) => {
       });
     }
 
-    const account = await stripe.accounts.retrieve(req.user.stripeAccountId);
+    console.log('Retrieving Stripe account:', user.stripeAccountId);
+    const account = await stripe.accounts.retrieve(user.stripeAccountId);
+    console.log('Stripe account retrieved:', {
+      id: account.id,
+      charges_enabled: account.charges_enabled,
+      payouts_enabled: account.payouts_enabled
+    });
+
+    const isConnected = account.charges_enabled && account.payouts_enabled;
+    console.log('Account connected:', isConnected);
 
     res.json({
       success: true,
       data: {
-        connected: account.charges_enabled && account.payouts_enabled,
-        status: account.charges_enabled && account.payouts_enabled ? 'active' : 'pending',
+        connected: isConnected,
+        status: isConnected ? 'active' : 'pending',
         account: {
           id: account.id,
           charges_enabled: account.charges_enabled,
