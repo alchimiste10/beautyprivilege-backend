@@ -11,7 +11,7 @@ const AppointmentService = require('../services/appointment.service');
 // Get available slots for a salon or stylist on a given date and duration
 router.get('/available-slots', async (req, res) => {
   try {
-    const { salonId, stylistId, date, duration } = req.query;
+    const { salonId, stylistId, date, duration, timezone } = req.query;
 
     if ((!salonId && !stylistId) || !date || !duration) {
       return res.status(400).json({ 
@@ -25,14 +25,16 @@ router.get('/available-slots', async (req, res) => {
       salonId,
       stylistId,
       date,
-      duration: parseInt(duration, 10)
+      duration: parseInt(duration, 10),
+      timezone: timezone || 'Europe/Paris'
     });
 
     const slots = await Appointment.getAvailableSlots(
       docClient, 
       { salonId, stylistId }, 
       date, 
-      parseInt(duration, 10)
+      parseInt(duration, 10),
+      timezone || 'Europe/Paris'
     );
 
     res.json({ success: true, slots: slots || [] });

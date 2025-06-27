@@ -340,17 +340,56 @@ class PaymentController {
 
     // Webhook pour les événements Stripe
     async handleWebhook(req, res) {
+        console.log('🚀 === WEBHOOK STRIPE RECEIVED ===');
+        console.log('📅 Timestamp:', new Date().toISOString());
+        console.log('🔗 URL:', req.url);
+        console.log('📋 Method:', req.method);
+        console.log('📦 Headers:', JSON.stringify(req.headers, null, 2));
+        console.log('📄 Body type:', typeof req.body);
+        console.log('📄 Body length:', req.body ? req.body.length : 'undefined');
+        console.log('📄 Body is Buffer:', Buffer.isBuffer(req.body));
+        console.log('📄 Body is string:', typeof req.body === 'string');
+        console.log('🔑 Stripe signature:', req.headers['stripe-signature'] ? 'Present' : 'Missing');
+        console.log('🔧 REACT_APP_STRIPE_WEBHOOK_SECRET:', process.env.REACT_APP_STRIPE_WEBHOOK_SECRET ? 'Défini' : 'Non défini');
+        console.log('🔧 Secret length:', process.env.REACT_APP_STRIPE_WEBHOOK_SECRET ? process.env.REACT_APP_STRIPE_WEBHOOK_SECRET.length : 'N/A');
+        
         const sig = req.headers['stripe-signature'];
         let event;
 
+        // Essayer de récupérer le body brut
+        let rawBody = req.body;
+        
+        // Si c'est un objet, essayer de le reconvertir en string avec le formatage exact
+        if (typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+            console.log('⚠️ Body est un objet, conversion en string...');
+            // Utiliser JSON.stringify avec 2 espaces pour correspondre au formatage Stripe
+            rawBody = JSON.stringify(req.body, null, 2);
+            console.log('📄 Body converti en string, longueur:', rawBody.length);
+        }
+        
+        // Si c'est déjà une string ou un Buffer, l'utiliser directement
+        if (typeof rawBody === 'string' || Buffer.isBuffer(rawBody)) {
+            console.log('✅ Body brut récupéré, type:', typeof rawBody);
+        } else {
+            console.log('❌ Impossible de récupérer le body brut');
+            return res.status(400).send('Webhook Error: Invalid body format');
+        }
+
         try {
+            console.log('🔍 Tentative de vérification de signature...');
+            console.log('🔍 Secret utilisé:', process.env.REACT_APP_STRIPE_WEBHOOK_SECRET ? 'OUI' : 'NON');
+            console.log('🔍 Signature reçue:', sig ? 'OUI' : 'NON');
+            
             event = stripe.webhooks.constructEvent(
-                req.body,
+                rawBody,
                 sig,
                 process.env.REACT_APP_STRIPE_WEBHOOK_SECRET
             );
+            console.log('✅ Signature webhook vérifiée avec succès');
+            console.log('📡 Événement reçu:', event.type);
         } catch (err) {
-            console.error('Erreur signature webhook:', err.message);
+            console.error('❌ Erreur de signature webhook:', err.message);
+            console.error('❌ Détails de l\'erreur:', err);
             return res.status(400).send(`Webhook Error: ${err.message}`);
         }
 

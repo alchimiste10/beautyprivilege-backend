@@ -15,7 +15,7 @@ router.get('/check-session/:sessionId', paymentController.checkSessionStatus);
 router.post('/confirm', paymentController.confirmPayment);
 
 // Route pour le webhook Stripe
-router.post('/webhook', express.raw({type: 'application/json'}), paymentController.handleWebhook);
+router.post('/webhook', paymentController.handleWebhook);
 
 router.get('/stripe-key', paymentController.getStripePublicKey);
 

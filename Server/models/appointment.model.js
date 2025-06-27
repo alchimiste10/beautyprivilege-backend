@@ -5,6 +5,14 @@ const { dynamoConfig } = require('../config/awsConfig');
 const Appointment = {
   // Créer un nouveau rendez-vous
   create: async (docClient, appointmentData) => {
+    // Vérifier que le créneau n'est pas dans le passé
+    const appointmentDateTime = new Date(`${appointmentData.date}T${appointmentData.startTime || appointmentData.timeSlot}`);
+    const now = new Date();
+    
+    if (appointmentDateTime <= now) {
+      throw new Error('Impossible de réserver un créneau dans le passé');
+    }
+
     const appointment = {
       id: uuidv4(),
       ...appointmentData,
@@ -362,9 +370,38 @@ const Appointment = {
     return `${hours}h00`;
   },
 
-  getAvailableSlots: async (docClient, { salonId, stylistId }, date, duration) => {
+  getAvailableSlots: async (docClient, { salonId, stylistId }, date, duration, timezone = 'Europe/Paris') => {
     try {
-     
+      // Vérifier si la date demandée est dans le passé
+      const requestedDate = new Date(date);
+      
+      // Utiliser la timezone du frontend pour calculer "aujourd'hui"
+      const now = new Date();
+      
+      // Créer une date dans la timezone du frontend pour aujourd'hui
+      const todayInTimezone = new Date(now.toLocaleString("en-US", {timeZone: timezone}));
+      const todayString = todayInTimezone.toISOString().split('T')[0]; // Format YYYY-MM-DD
+      
+      // Comparer les dates en format string pour éviter les problèmes de timezone
+      const isToday = date === todayString;
+      
+      // Obtenir l'heure actuelle dans la timezone du frontend
+      const currentTimeInTimezone = new Date(now.toLocaleString("en-US", {timeZone: timezone}));
+      const currentHour = currentTimeInTimezone.getHours();
+      const currentMinute = currentTimeInTimezone.getMinutes();
+      
+      console.log(`🔍 Vérification créneaux passés: Date=${date}, Date aujourd'hui (${timezone})=${todayString}, Heure actuelle (${timezone})=${currentHour}:${currentMinute}, Aujourd'hui=${isToday}`);
+
+      // Si la date demandée est dans le passé (avant aujourd'hui)
+      if (date < todayString) {
+        console.log('Date demandée dans le passé:', date);
+        return {
+          available: false,
+          reason: 'Date dans le passé',
+          workingDays: [],
+          slots: []
+        };
+      }
 
       // 1. Obtenir le jour de la semaine (0-6, où 0 est dimanche)
       const dayOfWeek = new Date(date).getDay();
@@ -414,6 +451,7 @@ const Appointment = {
         console.log('Pas d\'horaires pour ce jour');
         return {
           available: false,
+          reason: 'Pas d\'horaires pour ce jour',
           workingDays: workingDays,
           slots: []
         };
@@ -468,7 +506,6 @@ const Appointment = {
         existingBookings.push(...(salonBookings || []));
       }
 
-
       // 4. Calculer les heures de début possibles en excluant les créneaux réservés
       const startTime = new Date(`${date}T${daySchedule.start}`);
       const endTime = new Date(`${date}T${daySchedule.end}`);
@@ -480,6 +517,28 @@ const Appointment = {
         // Vérifier si le service peut être complété avant la fin des horaires
         const serviceEndTime = new Date(currentTime.getTime() + (duration * 60000));
         if (serviceEndTime <= endTime) {
+          // Vérifier si ce créneau est dans le passé (si c'est aujourd'hui)
+          if (isToday) {
+            const slotHour = currentTime.getHours();
+            const slotMinute = currentTime.getMinutes();
+            
+            // Comparer directement les heures et minutes
+            const slotTimeInMinutes = slotHour * 60 + slotMinute;
+            const currentTimeInMinutes = currentHour * 60 + currentMinute;
+            
+            // Si le créneau est dans le passé (avec marge de 30 minutes), l'exclure
+            if (slotTimeInMinutes <= (currentTimeInMinutes + 30)) {
+              console.log(`❌ Créneau ${Appointment.formatHour(currentTime)} exclu - dans le passé (créneau: ${slotHour}:${slotMinute}, actuel: ${currentHour}:${currentMinute})`);
+              currentTime = new Date(currentTime.getTime() + (60 * 60000));
+              continue;
+            } else {
+              console.log(`✅ Créneau ${Appointment.formatHour(currentTime)} disponible (créneau: ${slotHour}:${slotMinute}, actuel: ${currentHour}:${currentMinute})`);
+            }
+          } else {
+            // Si ce n'est pas aujourd'hui, tous les créneaux sont disponibles
+            console.log(`✅ Créneau ${Appointment.formatHour(currentTime)} disponible (date future)`);
+          }
+          
           // Vérifier si ce créneau chevauche une réservation existante
           const slotStart = currentTime.getTime();
           const slotEnd = serviceEndTime.getTime();
@@ -749,6 +808,104 @@ const Appointment = {
     }
     
     return enriched;
+  },
+
+  // Obtenir les rendez-vous terminés non payés
+  getCompletedUnpaid: async (docClient) => {
+    const params = {
+      TableName: dynamoConfig.tables.booking,
+      FilterExpression: '#status = :status AND #paymentTransferred = :paymentTransferred',
+      ExpressionAttributeNames: {
+        '#status': 'status',
+        '#paymentTransferred': 'paymentTransferred'
+      },
+      ExpressionAttributeValues: {
+        ':status': 'completed',
+        ':paymentTransferred': false
+      }
+    };
+
+    const { Items } = await docClient.scan(params).promise();
+    return Items || [];
+  },
+
+  // Obtenir les rendez-vous avec litiges
+  getWithDisputes: async (docClient) => {
+    const params = {
+      TableName: dynamoConfig.tables.booking,
+      FilterExpression: '#disputeStatus IN (:open, :pending)',
+      ExpressionAttributeNames: {
+        '#disputeStatus': 'disputeStatus'
+      },
+      ExpressionAttributeValues: {
+        ':open': 'open',
+        ':pending': 'pending'
+      }
+    };
+
+    const { Items } = await docClient.scan(params).promise();
+    return Items || [];
+  },
+
+  // Vérifier si un rendez-vous est éligible au paiement
+  isEligibleForPayment: (appointment) => {
+    // Vérifier que le rendez-vous est terminé
+    const appointmentDateTime = new Date(`${appointment.date}T${appointment.time}`);
+    const now = new Date();
+    const appointmentEndTime = new Date(appointmentDateTime.getTime() + (appointment.duration * 60 * 1000));
+
+    if (now < appointmentEndTime) {
+      return {
+        eligible: false,
+        reason: 'Le rendez-vous n\'est pas encore terminé',
+        remainingTime: appointmentEndTime - now
+      };
+    }
+
+    // Vérifier qu'il n'y a pas de litige
+    if (appointment.disputeStatus === 'open' || appointment.disputeStatus === 'pending') {
+      return {
+        eligible: false,
+        reason: 'Un litige est en cours pour ce rendez-vous'
+      };
+    }
+
+    // Vérifier que le paiement n'a pas déjà été effectué
+    if (appointment.paymentTransferred) {
+      return {
+        eligible: false,
+        reason: 'Le paiement a déjà été transféré'
+      };
+    }
+
+    return {
+      eligible: true
+    };
+  },
+
+  // Obtenir les rendez-vous éligibles au transfert automatique
+  getEligibleForTransfer: async (docClient) => {
+    const now = new Date().toISOString();
+    
+    const params = {
+      TableName: dynamoConfig.tables.booking,
+      FilterExpression: '#status = :status AND #paymentHeldUntil <= :now AND #paymentTransferred = :paymentTransferred AND (attribute_not_exists(#disputeStatus) OR #disputeStatus = :noDispute)',
+      ExpressionAttributeNames: {
+        '#status': 'status',
+        '#paymentHeldUntil': 'paymentHeldUntil',
+        '#paymentTransferred': 'paymentTransferred',
+        '#disputeStatus': 'disputeStatus'
+      },
+      ExpressionAttributeValues: {
+        ':status': 'completed',
+        ':now': now,
+        ':paymentTransferred': false,
+        ':noDispute': 'resolved'
+      }
+    };
+
+    const { Items } = await docClient.scan(params).promise();
+    return Items || [];
   }
 };
 

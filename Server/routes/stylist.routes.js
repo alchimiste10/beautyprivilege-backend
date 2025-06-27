@@ -2,9 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { docClient, s3, dynamoConfig, s3Config } = require('../config/awsConfig');
-
-// Middleware d'authentification
-const { authenticateToken } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/authMiddleware');
 const MessageController = require('../controllers/message.controller');
 const AppointmentService = require('../services/appointment.service');
 
@@ -52,7 +50,7 @@ const rebuildStylistUrls = (stylist) => {
 };
 
 // Route pour ajouter un styliste
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authMiddleware, async (req, res) => {
   try {
     const { userId, salonId, specialties, bio, experience } = req.body;
     
@@ -164,7 +162,7 @@ router.get('/', async (req, res) => {
 });
 
 // Route pour récupérer les stylistes suggérés basés sur les réservations
-router.get('/suggested', authenticateToken, async (req, res) => {
+router.get('/suggested', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
     
@@ -236,7 +234,7 @@ router.get('/suggested', authenticateToken, async (req, res) => {
 });
 
 // Route pour récupérer le profil du styliste
-router.get('/profile', authenticateToken, async (req, res) => {
+router.get('/profile', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
 
@@ -301,7 +299,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
 });
 
 // Route pour mettre à jour le profil du styliste
-router.put('/profile', authenticateToken, async (req, res) => {
+router.put('/profile', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
     const {
@@ -558,7 +556,7 @@ router.get('/featured', async (req, res) => {
 });
 
 // Route pour récupérer les statistiques du tableau de bord
-router.get('/dashboard/stats', authenticateToken, async (req, res) => {
+router.get('/dashboard/stats', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
 
@@ -610,7 +608,7 @@ router.get('/dashboard/stats', authenticateToken, async (req, res) => {
 });
 
 // Route pour récupérer les services d'un styliste
-router.get('/services', authenticateToken, async (req, res) => {
+router.get('/services', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
 
@@ -725,7 +723,7 @@ router.get('/:stylistId/services', async (req, res) => {
 });
 
 // Route pour créer un service
-router.post('/services', authenticateToken, async (req, res) => {
+router.post('/services', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
     const serviceData = req.body;
@@ -757,7 +755,7 @@ router.post('/services', authenticateToken, async (req, res) => {
 });
 
 // Route pour récupérer un service par ID
-router.get('/services/:id', authenticateToken, async (req, res) => {
+router.get('/services/:id', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
     const { id } = req.params;
@@ -784,7 +782,7 @@ router.get('/services/:id', authenticateToken, async (req, res) => {
 });
 
 // Route pour mettre à jour un service
-router.put('/services/:id', authenticateToken, async (req, res) => {
+router.put('/services/:id', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
     const { id } = req.params;
@@ -819,7 +817,7 @@ router.put('/services/:id', authenticateToken, async (req, res) => {
 });
 
 // Route pour supprimer un service
-router.delete('/services/:id', authenticateToken, async (req, res) => {
+router.delete('/services/:id', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
     const { id } = req.params;
@@ -846,7 +844,7 @@ router.delete('/services/:id', authenticateToken, async (req, res) => {
 });
 
 // Route pour récupérer les réservations d'un styliste
-router.get('/bookings', authenticateToken, async (req, res) => {
+router.get('/bookings', authMiddleware, async (req, res) => {
   try {
     const stylistId = req.user.id;
 
@@ -883,7 +881,7 @@ router.get('/bookings', authenticateToken, async (req, res) => {
 });
 
 // Route pour mettre à jour le statut d'une réservation
-router.put('/bookings/:id/status', authenticateToken, async (req, res) => {
+router.put('/bookings/:id/status', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -951,11 +949,126 @@ router.put('/bookings/:id/status', authenticateToken, async (req, res) => {
 });
 
 // Routes des messages pour les coiffeuses
-router.get('/conversations', authenticateToken, MessageController.getConversations);
-router.get('/conversations/:id', authenticateToken, MessageController.getConversation);
-router.post('/conversations/:id/messages', authenticateToken, MessageController.sendMessage);
-router.put('/conversations/:id/messages/:messageId/read', authenticateToken, MessageController.markMessageAsRead);
-router.get('/unread-messages', authenticateToken, MessageController.getUnreadCount);
-router.put('/mark-all-read', authenticateToken, MessageController.markAllAsRead);
+router.get('/conversations', authMiddleware, MessageController.getConversations);
+router.get('/conversations/:id', authMiddleware, MessageController.getConversation);
+router.post('/conversations/:id/messages', authMiddleware, MessageController.sendMessage);
+router.put('/conversations/:id/messages/:messageId/read', authMiddleware, MessageController.markMessageAsRead);
+router.get('/unread-messages', authMiddleware, MessageController.getUnreadCount);
+router.put('/mark-all-read', authMiddleware, MessageController.markAllAsRead);
+
+// Route pour connecter un styliste à Stripe Connect
+router.post('/connect-stripe', authMiddleware, async (req, res) => {
+  try {
+    // Vérifier que l'utilisateur est un styliste (professional)
+    if (req.user.role !== 'professional' && req.user.role !== 'Professional') {
+      return res.status(403).json({
+        success: false,
+        message: 'Seuls les stylistes peuvent se connecter à Stripe'
+      });
+    }
+
+    const { stripe } = require('../config/stripe.config');
+    const { getConnectClientId } = require('../config/stripe.config');
+
+    // Créer un lien de connexion Stripe Connect
+    const accountLink = await stripe.accountLinks.create({
+      account: req.user.stripeAccountId || await createStripeAccount(req.user),
+      refresh_url: `${process.env.REACT_APP_FRONTEND_URL}/stylist/connect-stripe/refresh`,
+      return_url: `${process.env.REACT_APP_FRONTEND_URL}/stylist/connect-stripe/success`,
+      type: 'account_onboarding',
+    });
+
+    res.json({
+      success: true,
+      data: {
+        url: accountLink.url
+      }
+    });
+  } catch (error) {
+    console.error('Erreur lors de la connexion Stripe:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la connexion à Stripe',
+      error: error.message
+    });
+  }
+});
+
+// Route pour vérifier le statut de connexion Stripe
+router.get('/stripe-status', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'professional' && req.user.role !== 'Professional') {
+      return res.status(403).json({
+        success: false,
+        message: 'Seuls les stylistes peuvent vérifier leur statut Stripe'
+      });
+    }
+
+    const { stripe } = require('../config/stripe.config');
+
+    if (!req.user.stripeAccountId) {
+      return res.json({
+        success: true,
+        data: {
+          connected: false,
+          status: 'not_connected'
+        }
+      });
+    }
+
+    const account = await stripe.accounts.retrieve(req.user.stripeAccountId);
+
+    res.json({
+      success: true,
+      data: {
+        connected: account.charges_enabled && account.payouts_enabled,
+        status: account.charges_enabled && account.payouts_enabled ? 'active' : 'pending',
+        account: {
+          id: account.id,
+          charges_enabled: account.charges_enabled,
+          payouts_enabled: account.payouts_enabled,
+          requirements: account.requirements
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Erreur lors de la vérification du statut Stripe:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la vérification du statut Stripe',
+      error: error.message
+    });
+  }
+});
+
+// Fonction pour créer un compte Stripe Connect
+async function createStripeAccount(user) {
+  const { stripe } = require('../config/stripe.config');
+  
+  const account = await stripe.accounts.create({
+    type: 'express',
+    country: 'FR',
+    email: user.email,
+    capabilities: {
+      card_payments: { requested: true },
+      transfers: { requested: true },
+    },
+    business_type: 'individual',
+    business_profile: {
+      url: process.env.REACT_APP_FRONTEND_URL,
+      mcc: '7299', // Code pour les services de coiffure
+    },
+  });
+
+  // Mettre à jour l'utilisateur avec l'ID du compte Stripe
+  const { docClient } = require('../config/awsConfig');
+  const User = require('../models/user.model');
+  
+  await User.update(docClient, user.id, {
+    stripeAccountId: account.id
+  });
+
+  return account.id;
+}
 
 module.exports = router;
